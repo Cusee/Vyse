@@ -15,16 +15,17 @@ Please read it fully before opening your first issue or PR. It will save everyon
 3. [Ways to Contribute](#ways-to-contribute)
 4. [Security Vulnerability Disclosure](#security-vulnerability-disclosure)
 5. [Getting Started — Development Environment](#getting-started)
-6. [Branching & Commit Conventions](#branching--commit-conventions)
-7. [Pull Request Process](#pull-request-process)
-8. [Testing Requirements](#testing-requirements)
-9. [Code Style & Linting](#code-style--linting)
-10. [Contributing ML Models or Scoring Changes](#contributing-ml-models-or-scoring-changes)
-11. [Contributing a Plugin (Threat Detector)](#contributing-a-plugin)
-12. [Documentation Contributions](#documentation-contributions)
-13. [Issue Labels Reference](#issue-labels-reference)
-14. [Review SLA & What to Expect](#review-sla)
-15. [License & Developer Certificate of Origin](#license--dco)
+6. [Working with gRPC & Protobuf](#working-with-grpc--protobuf)
+7. [Branching & Commit Conventions](#branching--commit-conventions)
+8. [Pull Request Process](#pull-request-process)
+9. [Testing Requirements](#testing-requirements)
+10. [Code Style & Linting](#code-style--linting)
+11. [Contributing ML Models or Scoring Changes](#contributing-ml-models-or-scoring-changes)
+12. [Contributing a Plugin (Threat Detector)](#contributing-a-plugin)
+13. [Documentation Contributions](#documentation-contributions)
+14. [Issue Labels Reference](#issue-labels-reference)
+15. [Review SLA & What to Expect](#review-sla)
+16. [License & Developer Certificate of Origin](#license--dco)
 
 ---
 
@@ -40,34 +41,59 @@ Report violations privately to: `conduct@vyse-security.dev` (or open a private G
 
 ## The Architecture
 
-Before contributing, understand the three moving parts. A change to one can silently break another.
+Before contributing, understand the five moving parts. A change to one can silently break another, especially across the gRPC boundary.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  gateway/          Node.js / Express                │
-│  Auth, rate-limiting, session injection             │
-│  Talks to: engine via internal HTTP                 │
-├─────────────────────────────────────────────────────┤
-│  engine/           Python / FastAPI                 │
-│  Scoring, tier logic, defence pipeline, Rekor       │
-│  Talks to: gateway (receives), Rekor, DB            │
-├─────────────────────────────────────────────────────┤
-│  dashboard/        React SPA                        │
-│  Admin UI, live WebSocket feed                      │
-│  Talks to: gateway admin endpoints                  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  gateway/              Go (Gin / Fiber)                      │
+│  Request ingestion, JWT auth, rate limiting, session init    │
+│  Talks to: engine via gRPC                                   │
+├──────────────────────────────────────────────────────────────┤
+│  engine/               Rust (Axum / Tokio)                   │
+│  Behavioral scoring, ML inference, defence pipeline, Rekor   │
+│  Talks to: Redis (session state), PostgreSQL (logs), Rekor   │
+├──────────────────────────────────────────────────────────────┤
+│  proto/                Protobuf definitions                  │
+│  Service contracts between gateway and engine                │
+│  Generated code must be committed — see §Working with gRPC   │
+├──────────────────────────────────────────────────────────────┤
+│  infra/                Redis + PostgreSQL                    │
+│  Redis: hot-path session state, velocity counters            │
+│  PostgreSQL: persistent attack logs, analytics               │
+├──────────────────────────────────────────────────────────────┤
+│  dashboard/            React SPA                             │
+│  Real-time monitoring, audit verification                    │
+│  Talks to: gateway admin REST endpoints + WebSocket          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**Critical paths** — changes here require extra scrutiny and dedicated tests:
+### Critical Paths
 
-| Path | Why It's Critical |
-|---|---|
-| `engine/app/scoring/` | Determines tier. Wrong logic = false negatives (attacks slip through) or false positives (legit users degraded). |
-| `engine/app/defence/pipeline.py` | Applies perturbation. Broken pipeline = clean responses served to Tier 3 actors. |
-| `engine/app/store/rekor.py` | Audit immutability. A bug here silently loses the forensic trail. |
-| `gateway/src/middleware/auth.js` | Auth bypass = full admin exposure. |
+Changes to the following require extra scrutiny and dedicated tests. Expect a slower review and harder questions.
 
-If your PR touches any of the above, expect a slower review and more questions. This is intentional.
+| Path | Language | Why It's Critical |
+|---|---|---|
+| `engine/src/scoring/` | Rust | Determines tier. Wrong logic = false negatives (attacks through) or false positives (legit users degraded). |
+| `engine/src/defence/pipeline.rs` | Rust | Applies perturbation. A bug here serves clean responses to Tier 3 actors. |
+| `engine/src/audit/rekor.rs` | Rust | Immutability. A silent bug loses the forensic audit trail permanently. |
+| `gateway/internal/middleware/auth.go` | Go | Auth bypass = full admin exposure to the internet. |
+| `proto/vyse.proto` | Protobuf | Breaks the gateway↔engine contract. Requires coordinated changes in both services. |
+| `engine/src/store/session.rs` | Rust | Redis session state. Corruption here creates ghost tiers and incorrect scoring. |
+
+### Data Flow at a Glance
+
+```
+Client → [Go Gateway] → gRPC → [Rust Engine]
+                                     │
+                         ┌───────────┼───────────┐
+                         ↓           ↓           ↓
+                       Redis      ML Models   PostgreSQL
+                   (session state)(inference) (audit logs)
+                                     │
+                                     ↓
+                                   Rekor
+                              (Tier 3 events)
+```
 
 ---
 
@@ -83,19 +109,25 @@ If your PR touches any of the above, expect a slower review and more questions. 
 
 ### Coder? Pick your track.
 
-| Track | Good entry points |
-|---|---|
-| Bug fixes | Issues labelled `bug` + `good first issue` |
-| Scoring improvements | Issues labelled `scoring` — requires ML understanding |
-| Defence / perturbation | Issues labelled `defence` |
-| Plugin development | See [Contributing a Plugin](#contributing-a-plugin) |
-| Gateway / infra | Issues labelled `gateway` |
-| Dashboard / frontend | Issues labelled `dashboard` |
-| Tests | Issues labelled `test-coverage` — always needed |
+| Track | Language | Good entry points |
+|---|---|---|
+| Bug fixes | Go or Rust | Issues labelled `bug` + `good first issue` |
+| Gateway features | Go | Issues labelled `gateway` |
+| Scoring improvements | Rust | Issues labelled `scoring` — requires ML understanding |
+| Defence / perturbation | Rust | Issues labelled `defence` |
+| ML model / inference | Rust | Issues labelled `ml-inference` — requires Rust + ONNX/candle familiarity |
+| Redis / session state | Rust | Issues labelled `redis` |
+| gRPC / proto definitions | Protobuf | Issues labelled `grpc` |
+| Plugin development | Rust | See [Contributing a Plugin](#contributing-a-plugin) |
+| Dashboard / frontend | React / JS | Issues labelled `dashboard` |
+| Infrastructure / DB | SQL / Docker | Issues labelled `infra` |
+| Tests | Go or Rust | Issues labelled `test-coverage` — always needed |
 
 ### Not sure where to start?
 
-Look for [`good first issue`](../../labels/good%20first%20issue) — these are intentionally scoped to be completable with a 1–2 hour time investment and don't touch security-critical paths.
+Look for [`good first issue`](../../labels/good%20first%20issue) — scoped to 1–2 hours, clear outcome, no critical paths involved.
+
+If you know Go but not Rust (or vice versa), filter by the `gateway` or `engine` label. The two services are independently workable.
 
 ---
 
@@ -103,19 +135,19 @@ Look for [`good first issue`](../../labels/good%20first%20issue) — these are i
 
 > Vyse is a security tool. We take our own security seriously.
 
-**Do NOT open a public GitHub issue for security vulnerabilities.** This exposes the flaw to attackers before a fix exists.
+**Do NOT open a public GitHub issue for security vulnerabilities.** This exposes the flaw before a fix exists.
 
 Instead:
 
 1. Go to **Security → Report a Vulnerability** on the GitHub repo page
 2. Or email `security@vyse-security.dev` with PGP encryption (key on our website)
-3. Include: affected component, reproduction steps, and your assessment of severity
+3. Include: affected component, reproduction steps, and your severity assessment
 
 We will acknowledge within **48 hours**, provide a fix timeline within **5 business days**, and credit you in the security advisory unless you prefer anonymity.
 
-### Special case: Bypass techniques
+### Special Case: Bypass Techniques
 
-If you discover a technique that reliably evades Vyse's tier classification — a "bypass" — this is a **security vulnerability**, not a feature request. Please report it privately using the process above. We will treat it with the same urgency as a code vulnerability, fix it, and credit you.
+If you discover a technique that reliably evades Vyse's tier classification — a "bypass" — this is a **security vulnerability**, not a feature request. Report it privately. We will treat it with the same urgency as a code flaw, fix it, and credit you.
 
 ---
 
@@ -125,57 +157,105 @@ If you discover a technique that reliably evades Vyse's tier classification — 
 
 | Tool | Minimum Version | Purpose |
 |---|---|---|
-| Python | 3.10+ | Engine |
-| Node.js | 18+ | Gateway & Dashboard |
+| Go | 1.22+ | Gateway |
+| Rust | stable (1.77+) | Engine |
+| `protoc` | 25.x+ | Protobuf code generation |
+| `protoc-gen-go` + `protoc-gen-go-grpc` | latest | Go gRPC stubs |
 | Docker + Docker Compose | v2+ | Full stack local dev |
+| Redis | 7+ | Session state (via Docker is fine) |
+| PostgreSQL | 15+ | Persistent storage (via Docker is fine) |
 | Git | 2.35+ | For `--force-with-lease` support |
+
+Install Rust via [rustup](https://rustup.rs/). Install Go from [go.dev/dl](https://go.dev/dl/). Install `protoc` via your system package manager or from [github.com/protocolbuffers/protobuf/releases](https://github.com/protocolbuffers/protobuf/releases).
+
+```bash
+# Verify everything before starting
+go version           # go1.22.x
+rustc --version      # rustc 1.77.x
+protoc --version     # libprotoc 25.x
+docker compose version
+```
 
 ### Fork & Clone
 
 ```bash
-# Fork the repo on GitHub first, then:
+# Fork on GitHub first, then:
 git clone https://github.com/YOUR_USERNAME/vyse.git
 cd vyse
 git remote add upstream https://github.com/vyse-security/vyse.git
 ```
 
-### Engine (Python)
+### Infrastructure (Start This First)
+
+Redis and PostgreSQL are required by both the engine and all integration tests. The easiest path is Docker:
+
+```bash
+# Start Redis and PostgreSQL
+docker compose up -d redis postgres
+
+# Verify both are healthy
+docker compose ps
+
+# Run database migrations
+cd infra && make migrate-up
+```
+
+### Engine (Rust)
 
 ```bash
 cd engine
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# Install with all dev dependencies
-pip install -e ".[dev,test,lint]"
-
-# Download required ML models (first time only, ~125MB)
-python scripts/download_models.py
-
-# Copy and configure environment
+# Copy config
 cp .env.example .env
-# Edit .env — minimum required: GROQ_API_KEY
+# Minimum required: GROQ_API_KEY, REDIS_URL, DATABASE_URL
 
-# Run the engine
-uvicorn app.main:app --reload --port 8000
+# Download ML models — first time only, ~125MB total
+# Exports all-MiniLM-L6-v2 and nli-MiniLM2-L6-H768 to ONNX format
+make download-models
+
+# Build in debug mode (fast compile, slower runtime)
+cargo build
+
+# Run
+cargo run -- --config config.toml
+
+# Hot-reload during development
+cargo install cargo-watch
+cargo watch -x run
 ```
 
-### Gateway (Node.js)
+The engine binds to `localhost:50051` (gRPC) by default.
+
+### Gateway (Go)
 
 ```bash
 cd gateway
-npm install
+
+# Download dependencies
+go mod download
+
+# Copy config
 cp .env.example .env
-node src/index.js
+# Minimum required: ENGINE_GRPC_ADDR, JWT_SECRET, VYSE_API_KEY
+
+# Run
+go run ./cmd/vyse-gateway
+
+# Hot-reload (install air first)
+go install github.com/air-verse/air@latest
+air
 ```
+
+The gateway binds to:
+- `localhost:8080` — public inference endpoint
+- `localhost:8081` — admin REST + WebSocket (JWT-protected)
 
 ### Dashboard (React)
 
 ```bash
 cd dashboard
 npm install
+cp .env.example .env
 npm start   # http://localhost:3000
 ```
 
@@ -183,21 +263,55 @@ npm start   # http://localhost:3000
 
 ```bash
 cp .env.example .env
-# Fill in GROQ_API_KEY, SERVER_SECRET, ADMIN_PASSWORD
+# Fill in: GROQ_API_KEY, JWT_SECRET, ADMIN_PASSWORD, VYSE_API_KEY
 
 docker compose up --build
-# Dashboard: http://localhost:3000
-# Engine API: http://localhost:8000/docs
+# Dashboard:         http://localhost:3000
+# Gateway public:    http://localhost:8080
+# Gateway admin:     http://localhost:8081
+# Engine (gRPC):     localhost:50051
+# PostgreSQL:        localhost:5432
+# Redis:             localhost:6379
 ```
 
 ### Run the Attack Simulator
 
 ```bash
-# In a separate terminal while the stack is running:
+# Requires the full stack to be running
 cd tools
-node attack-simulator.js --user attack-test-001 --duration 15
+go run ./attack-simulator --user attack-test-001 --duration 15 --rps 2
 # Watch the dashboard escalate through tiers in real time
 ```
+
+---
+
+## Working with gRPC & Protobuf
+
+The gateway and engine communicate exclusively via gRPC. The service contract lives in `proto/vyse.proto`. This file is **the source of truth** for the gateway↔engine interface.
+
+### If You Need to Change the Proto Definition
+
+1. Edit `proto/vyse.proto`
+2. Regenerate all stubs:
+   ```bash
+   make proto-gen
+   # Runs protoc for both Go (gateway stubs) and Rust (engine stubs)
+   # Generated files are committed to the repo — do not .gitignore them
+   ```
+3. Update the Go gateway stubs in `gateway/internal/grpc/`
+4. Update the Rust engine stubs in `engine/src/proto/`
+5. Run integration tests: `make test-integration`
+
+### Rules for Proto Changes
+
+- **Never remove or renumber existing fields.** Protobuf uses field numbers for wire encoding. Removing or reusing a field number silently corrupts data in mixed-version deployments.
+- **Adding new optional fields is backwards-compatible.** Safe to do without coordination.
+- **Changing a field type is a breaking change.** Treat it like `BREAKING CHANGE:` in your commit and document the migration path.
+- Every `.proto` change must include updated generated stubs in the same commit. PRs with stale generated code are rejected.
+
+### Generated Code Policy
+
+Generated gRPC stubs (`*.pb.go`, `*.pb.rs`) are **committed to the repository**. Do not add them to `.gitignore`. This ensures contributors can build without running `protoc` locally, and CI can detect drift between proto definitions and generated stubs.
 
 ---
 
@@ -210,13 +324,15 @@ Branches **must** follow this pattern: `<type>/<short-description>`
 ```
 feat/isolation-forest-a-score
 fix/tier3-rekor-submission-timeout
+fix/redis-session-ttl-race-condition
 docs/plugin-contribution-guide
 test/scoring-e-score-edge-cases
-chore/upgrade-sentence-transformers-3.x
+chore/upgrade-ort-2.x
 refactor/defence-pipeline-seed-locking
+proto/add-session-metadata-field
 ```
 
-Work exclusively on feature branches. **Never push directly to `main`.** All changes enter through pull requests.
+Never push directly to `main`. All changes enter through pull requests.
 
 ### Commit Message Format
 
@@ -234,16 +350,17 @@ Vyse follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.
 
 | Type | When to Use |
 |---|---|
-| `feat` | A new feature visible to users or API consumers |
+| `feat` | A new user-visible or API-visible feature |
 | `fix` | A bug fix |
 | `docs` | Documentation only |
-| `test` | Adding or fixing tests — no production code change |
+| `test` | Adding or fixing tests only — no production code change |
 | `refactor` | Code change that neither fixes a bug nor adds a feature |
-| `perf` | Performance improvement |
+| `perf` | A measurable performance improvement |
 | `chore` | Build process, dependency updates, CI changes |
-| `security` | Security hardening that isn't a bug fix (e.g. tightening CORS) |
+| `security` | Security hardening not classified as a bug fix |
+| `proto` | Changes to `.proto` definitions and generated stubs |
 
-**Allowed scopes:** `engine`, `gateway`, `dashboard`, `scoring`, `defence`, `rekor`, `auth`, `db`, `plugin`, `docker`, `docs`, `ci`
+**Allowed scopes:** `gateway`, `engine`, `dashboard`, `scoring`, `defence`, `rekor`, `auth`, `redis`, `postgres`, `grpc`, `proto`, `plugin`, `docker`, `docs`, `ci`, `infra`
 
 **Examples:**
 
@@ -258,40 +375,41 @@ Closes #42
 ```
 
 ```
-fix(rekor): handle submission timeout with exponential backoff
+fix(redis): prevent race condition on concurrent session writes
 
-Rekor submissions that time out now retry up to 3 times with
-exponential backoff (1s, 2s, 4s) before enqueuing for async
-retry. Prevents silent audit trail gaps under network load.
+Replace GET-then-SET with atomic WATCH/MULTI/EXEC transaction
+for session embedding updates. Prevents score corruption when
+two requests from the same session arrive within the same
+millisecond under high load.
+
+Closes #77
 ```
 
 ```
-security(auth): reject JWTs signed with none algorithm
+proto(grpc): add session_metadata field to InferenceRequest
 
-Closes #89
+BREAKING CHANGE: gateway must populate session_metadata or
+engine returns INVALID_ARGUMENT. Deploy engine update before
+gateway update. See migration guide in docs/migration/v0.4.md.
 ```
 
 **Rules:**
-- Use **imperative mood** in the summary: "add", "fix", "remove" — not "added", "fixes", "removing"
-- Keep the summary line under **72 characters**
-- Reference issues in the footer with `Closes #N` or `Ref #N`
-- Breaking changes must include `BREAKING CHANGE:` in the footer with migration notes
+- **Imperative mood** in summary: "add", "fix", "remove" — not "added", "fixes"
+- Summary under **72 characters**
+- Reference issues in the footer: `Closes #N` or `Ref #N`
+- `proto` commits must include both the `.proto` change and the regenerated stubs
 
 ### Keeping Your Branch Updated
 
 ```bash
-# Fetch latest from upstream
 git fetch upstream
-
-# Rebase your branch — do NOT merge main into your feature branch
 git rebase upstream/main
 
-# If force-push is needed after rebase, always use --force-with-lease
-# (protects against overwriting someone else's commits on the same branch)
+# Force-push after rebase if needed — always use --force-with-lease
 git push origin your-branch --force-with-lease
 ```
 
-Never use `git push --force`. Only ever `git push --force-with-lease`.
+Never `git push --force`. Only ever `--force-with-lease`.
 
 ---
 
@@ -299,238 +417,322 @@ Never use `git push --force`. Only ever `git push --force-with-lease`.
 
 ### Before Opening a PR
 
-- [ ] Run the full test suite locally: `make test`
-- [ ] Run the linter: `make lint`
-- [ ] If you changed `engine/`, verify the engine starts cleanly: `uvicorn app.main:app`
-- [ ] If your change affects tier logic, run the attack simulator and check the output makes sense
-- [ ] Update `CHANGELOG.md` under the `[Unreleased]` heading
-- [ ] Update relevant documentation if behaviour changed
-
-### PR Title
-
-PR titles follow the same Conventional Commits format as commit messages.
+- [ ] `make test` passes — full test suite in both Rust and Go
+- [ ] `make lint` passes — no errors in `cargo clippy` or `golangci-lint`
+- [ ] If you changed `proto/`, regenerate stubs with `make proto-gen` and commit them
+- [ ] If you changed `engine/`, verify release build: `cargo build --release`
+- [ ] If you changed `gateway/`, verify: `go build ./...`
+- [ ] If your change affects tier logic, run the attack simulator and verify escalation behaviour
+- [ ] `CHANGELOG.md` updated under `[Unreleased]`
+- [ ] Relevant documentation updated if user-facing behaviour changed
 
 ### PR Description Template
 
-When you open a PR, a template will be provided. Fill in all sections — don't delete them. The template asks for:
+When you open a PR, a template loads automatically. Fill all sections. It asks for:
 
-- **What** — a description of the change
-- **Why** — the motivation; link to the issue if one exists
-- **How** — any non-obvious implementation decisions
-- **Test plan** — what you tested, how to reproduce your test
-- **Security considerations** — how does this change affect the threat model? (Required for changes to `scoring/`, `defence/`, `auth/`, `rekor/`)
-- **Breaking changes** — if any
+- **What** — description of the change
+- **Why** — motivation; link the issue
+- **How** — non-obvious implementation decisions
+- **Test plan** — what you tested and how to reproduce
+- **Security considerations** — required for changes to `scoring/`, `defence/`, `auth/`, `rekor/`, `proto/`
+- **Breaking changes** — if any, include migration notes
+- **Proto changes** — confirm generated stubs are included if `.proto` was modified
 
 ### PR Scope
 
-**Keep PRs focused.** One logical change per PR. If you find unrelated issues while working, open a separate issue (or PR) rather than bundling fixes.
-
-A PR that touches `scoring/`, `defence/`, and `dashboard/` all at once will be asked to split up unless the changes are genuinely inseparable.
-
-### Draft PRs
-
-Open a draft PR early if you want early feedback on direction. Maintainers will comment on design without expecting the code to be complete. Move to "Ready for Review" when all checklist items are met.
+One logical change per PR. A PR touching the proto definition, scoring logic, Redis session handling, and the dashboard simultaneously is too broad. Split it unless the changes are genuinely inseparable.
 
 ### Review Process
 
-- At least **1 maintainer approval** is required to merge
-- PRs touching security-critical paths require **2 approvals**
-- CI must pass (tests, lint, docker build)
+- Minimum **1 maintainer approval** to merge
+- PRs touching critical paths require **2 approvals**
+- CI must pass: Rust tests, Go tests, lint, proto drift check, Docker build, integration tests
 - All reviewer comments must be resolved or explicitly acknowledged
 
-Once approved and CI is green, a maintainer will merge. Contributors do not merge their own PRs.
+A maintainer merges once approved. Contributors do not self-merge.
 
 ---
 
 ## Testing Requirements
 
-Vyse has three test layers. All three must pass before merging.
+Three test layers. All three must pass before any merge.
 
-### Unit Tests (Python — pytest)
+### Unit Tests
 
-Location: `engine/tests/`
+**Rust (Engine):**
+```bash
+cd engine
+cargo test                          # all unit tests
+cargo test scoring::                # scoring module only
+cargo test defence::                # defence module only
+cargo test -- --nocapture           # with stdout (useful for debugging)
+```
 
-Run: `cd engine && pytest tests/unit/ -v`
+**Go (Gateway):**
+```bash
+cd gateway
+go test ./...                       # all packages
+go test ./internal/middleware/...   # auth middleware only
+go test -race ./...                 # with race detector — run this before every PR
+```
 
-**Required coverage for new code:** All new functions in `scoring/`, `defence/`, and `store/` must have unit tests. The CI enforces a minimum of **80% line coverage** on the `engine/app/` package.
+**Coverage floors (enforced by CI):**
+
+| Component | Minimum Line Coverage |
+|---|---|
+| `engine/src/scoring/` | 85% |
+| `engine/src/defence/` | 80% |
+| `engine/src/audit/` | 80% |
+| `gateway/internal/middleware/` | 85% |
+| `gateway/internal/grpc/` | 75% |
 
 ```bash
-# Run with coverage report
-pytest tests/unit/ --cov=app --cov-report=term-missing
+# Rust coverage
+cargo install cargo-llvm-cov
+cargo llvm-cov --html
+
+# Go coverage
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
 ```
 
 ### Integration Tests
 
-Location: `engine/tests/integration/`
+Exercise the full gateway → gRPC → engine → Redis → PostgreSQL path. Requires both Redis and PostgreSQL running.
 
-These tests start a real FastAPI app, make requests, and verify the full request lifecycle — including tier escalation and Rekor submission (mocked by default, real Rekor optional via `REKOR_URL` env var).
+```bash
+# Start infra first
+docker compose up -d redis postgres
 
-Run: `cd engine && pytest tests/integration/ -v`
+make test-integration
+```
+
+The Rekor client is mocked by default. To test against the live public log:
+```bash
+REKOR_URL=https://rekor.sigstore.dev make test-integration
+```
 
 ### End-to-End Tests
 
-Run: `make test-e2e` — starts the full Docker Compose stack and runs the attack simulator, then asserts on the database state.
+Spins up the full Docker Compose stack, runs the attack simulator, and asserts on tier progression and database state.
 
-These are slower (~2 min) and run in CI on every PR. Run locally before any PR that touches the Docker configuration.
+```bash
+make test-e2e   # ~3 minutes
+```
 
-### What to Test
+Run this before any PR touching Docker configuration, gRPC contracts, or tier logic.
 
-When adding a new scoring signal:
-- Test with zero previous context (first query)
-- Test at the exact tier transition boundaries (score == threshold)
-- Test with malformed / empty input
-- Test that legitimate-looking queries don't score above Tier 1 thresholds
+### What to Test — By Change Type
 
-When adding a new perturbation technique:
-- Test that the output is different from the input
-- Test that the seed-locked version produces identical output on re-run with the same seed
-- Test on very short inputs (1 word) and very long inputs (1000+ tokens)
+**New scoring signal:**
+- First request (no prior session context)
+- Score exactly at the tier transition boundary
+- Empty / malformed / extremely long inputs
+- A normal-looking benign session must not cross Tier 2
+
+**New Redis operation:**
+- Concurrent writes from the same session — run with `cargo test -- --test-threads=8`
+- TTL expiry mid-request — what happens when the session key disappears?
+- Redis unavailable — the engine must return a proper error, not panic
+
+**Proto change:**
+- Old gateway against new engine (backwards compat)
+- New gateway against old engine (forwards compat if required)
+
+**Defence pipeline change:**
+- Seed-locked: identical input + identical seed must produce identical output across 100 runs
+- Tier 1 sessions must receive completely unperturbed clean responses
+- Very short responses (1 word, 1 token) must not panic or produce empty output
 
 ---
 
 ## Code Style & Linting
 
-### Python (Engine)
-
-Vyse uses **ruff** for linting and formatting (replaces flake8 + black + isort in one tool).
+### Rust (Engine)
 
 ```bash
-# Check
-cd engine && ruff check app/ tests/
+cd engine
 
-# Auto-fix
-ruff check app/ tests/ --fix
+# Format — must pass in CI
+cargo fmt --check
+cargo fmt              # auto-fix
 
-# Format
-ruff format app/ tests/
+# Lint — all warnings are errors in CI
+cargo clippy -- -D warnings
 ```
 
-Configuration is in `engine/pyproject.toml`. Do not override it in your PR.
+**Rust-specific rules:**
 
-Key rules:
-- Type hints are **required** on all public functions
-- Async functions must have `async` in the signature — no sync DB calls in async handlers
-- `print()` is banned in production code — use `structlog.get_logger()`
-- No bare `except:` — always catch specific exceptions
+- Use `thiserror` for error types — no `Box<dyn Error>` in library code
+- All `async` functions in the hot path must carry `#[instrument]` (tracing crate)
+- No `unwrap()` or `expect()` in production code — use `?` with typed errors. Exceptions: test code, and genuinely unreachable branches with a `// SAFETY:` comment
+- `unsafe` blocks require a `// SAFETY:` comment explaining the upheld invariants
+- Prefer `Arc<T>` for state shared across async tasks
+- All Redis operations must handle connection failures by returning `Err(...)`, never by panicking
 
-### Node.js (Gateway)
+### Go (Gateway)
 
 ```bash
-cd gateway && npm run lint     # ESLint
-cd gateway && npm run format   # Prettier
+cd gateway
+
+gofmt -l .             # list files needing formatting
+gofmt -w .             # auto-format
+golangci-lint run ./...
 ```
+
+Install: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+
+**Go-specific rules:**
+
+- All exported functions, types, and methods must have godoc comments
+- Error strings lowercase, no trailing punctuation — Go convention
+- No `log.Fatal` or `os.Exit` outside of `main()` — propagate errors upward
+- `context.Context` is always the first parameter when accepted
+- gRPC handlers must propagate context cancellation — check `ctx.Done()` in loops
+- Use `errors.Is` and `errors.As` — never compare error strings directly
+
+### Protobuf
+
+- Field names: `snake_case`
+- Message and service names: `PascalCase`
+- Every field must have a comment
+- Removed fields must use `reserved` with a comment explaining why
 
 ### React (Dashboard)
 
 ```bash
-cd dashboard && npm run lint
-cd dashboard && npm run format
+cd dashboard
+npm run lint
+npm run format
 ```
 
-### General Rules Across All Components
+### Universal Rules
 
-- No hardcoded credentials, API keys, tokens, or secrets anywhere in code
-- No commented-out code in merged PRs — delete it or open a follow-up issue
-- Environment-specific configuration belongs in `.env` files, not in source code
-- All user-facing strings must be in English
+- No hardcoded credentials, tokens, or secrets anywhere — ever
+- No commented-out code in merged PRs
+- All configuration via environment variables or `config.toml` — never hardcoded
+- Structured logging only: Go uses `slog`, Rust uses `tracing` — no `fmt.Println` or `println!` in production code
 
 ---
 
 ## Contributing ML Models or Scoring Changes
 
-This section applies to PRs that change, replace, or add ML models used in Vyse's scoring or defence pipeline. These changes have outsized security impact and require extra rigour.
+### How ML Inference Works in Vyse
 
-### Why This Is Different
+The Rust engine runs all ML inference natively using one of two backends:
 
-Vyse's effectiveness depends entirely on its scoring accuracy. A change to the embedding model, anomaly detector, or NLI classifier can:
+- **ONNX Runtime (`ort` crate)** — default. Cross-platform, well-supported, fastest for inference.
+- **Candle (HuggingFace)** — alternative. Pure Rust, no C++ runtime dependency, slightly slower.
 
-- Increase false positives (legitimate users get degraded responses)
-- Increase false negatives (attackers evade detection)
-- Introduce adversarial exploitability (a new model may be more easily fooled)
+Models are exported to ONNX format during `make download-models` and loaded at engine startup. If you are proposing a new model, you must provide an ONNX export and a verified parity check — see requirements below.
+
+### Why Scoring Changes Are Gated
+
+A change to the embedding model, anomaly detector, or NLI classifier can:
+
+- Increase **false positives** — legitimate users receive degraded, perturbed responses
+- Increase **false negatives** — attackers evade detection entirely
+- Introduce **adversarial exploitability** — a new model may be more sensitive to adversarial inputs
 
 ### Required Before Proposing a Model Change
 
-1. **Open an issue first.** Label it `scoring` + `rfc`. Describe the proposed change, your motivation, and your preliminary evidence. Wait for a maintainer to signal interest before writing code.
+1. **Open an issue first.** Label it `scoring` + `rfc`. Describe the proposed change, motivation, and preliminary evidence. Wait for maintainer sign-off before writing code.
 
-2. **Benchmark against the current model.** Run `tools/scoring_benchmark.py` and include the output in your PR. This script tests both models against the standard attack corpus and reports precision/recall on tier assignment.
+2. **Benchmark against the current model.** Run `tools/scoring_benchmark.py` against both models. Include the output in your PR. The benchmark reports precision/recall on tier assignment against the standard attack corpus.
 
-3. **Check the model's license.** Vyse is GNU GENERAL PUBLIC licensed. The model must be Apache-2, MIT, or BSD licensed. Include the license in your PR description.
+3. **License check.** Vyse is MIT licensed. The model must be Apache-2, MIT, or BSD.
 
-4. **CPU performance.** The model must be runnable on CPU within 200ms per request on a 2-core machine. Include your benchmark results.
+4. **CPU performance.** The ONNX export must run inference within **50ms per request** on a 2-core machine. Rust inference via `ort` is significantly faster than Python — if your model needs 150ms, that is a regression.
 
-5. **Size constraint.** The model must be under 500MB. Models requiring GPU are not suitable for the default deployment.
+5. **Size limit.** ONNX export under 500MB.
 
-### Acceptable Model Proposals
+6. **ONNX parity check.** Run `tools/models/verify_onnx.py` and include the output. Cosine similarity between original Python outputs and ONNX outputs on 100 test inputs must be ≥ 0.999.
 
-- Replacing `all-MiniLM-L6-v2` for D-Score: only with a model that demonstrably improves semantic separation between attack and non-attack queries on the benchmark
-- New scoring signal (new score type): must have a corresponding issue, RFC, and benchmark
-- Updating a model version: straightforward — verify the API is unchanged and all tests pass
+### Acceptable Proposals
+
+- Replacing `all-MiniLM-L6-v2` for D-Score: only if the benchmark shows improved attack/benign separation
+- New scoring signal: requires issue, RFC discussion, and benchmark before implementation
+- Updating a model version: verify ONNX parity and that all tests pass
 
 ---
 
 ## Contributing a Plugin
 
-Vyse's plugin system allows external threat detector modules to be loaded at startup from the `plugins/` directory. A plugin adds a new score signal, input filter, or post-processing step without modifying core engine code.
+Vyse's plugin system allows external threat detector modules. A plugin adds a new score signal, input filter, or post-processing step without touching core engine code.
 
-### Plugin Interface
+### Plugin Interface (Rust Trait)
 
-```python
-# All plugins must implement this ABC
-from vyse.plugin import VyseThreatPlugin, PluginContext, PluginResult
+```rust
+// All plugins must implement this trait.
+// Full type definitions: engine/src/plugin/mod.rs
 
-class MyDetector(VyseThreatPlugin):
-    name = "my-detector"          # unique slug, lowercase, hyphens only
-    version = "1.0.0"
-    author = "Your Name"
-    license = "GNU GENERAL PUBLIC LICENSE"       # must be MIT / Apache-2 / BSD
+use async_trait::async_trait;
+use vyse_engine::plugin::{PluginContext, PluginError, PluginResult, VyseThreatPlugin};
 
-    async def evaluate(self, ctx: PluginContext) -> PluginResult:
-        """
-        ctx contains: prompt, user_id_hash, session_history, base_scores
-        Return: score in [0.0, 1.0] and optional metadata dict
-        """
-        ...
+pub struct MyDetector;
+
+#[async_trait]
+impl VyseThreatPlugin for MyDetector {
+    fn name(&self) -> &'static str {
+        "my-detector"   // unique slug: lowercase, hyphens only
+    }
+
+    fn version(&self) -> &'static str { "1.0.0" }
+
+    fn license(&self) -> &'static str {
+        "MIT"           // must be MIT, Apache-2, or BSD
+    }
+
+    async fn evaluate(&self, ctx: &PluginContext) -> Result<PluginResult, PluginError> {
+        // ctx: prompt, user_id_hash, session_history, base_scores
+        // Return: score in [0.0, 1.0] + optional metadata HashMap
+        todo!()
+    }
+}
 ```
 
 ### Plugin PR Requirements
 
-- The plugin must live in `plugins/<your-plugin-name>/`
-- Include a `README.md` in the plugin directory explaining what it detects and why
-- Include unit tests in `plugins/<your-plugin-name>/tests/`
-- The plugin must not make external network requests without explicit documentation and opt-in configuration
-- Declare all third-party dependencies in `plugins/<your-plugin-name>/requirements.txt`
-- Plugins that use ML models: follow the [ML model requirements](#contributing-ml-models-or-scoring-changes) above
+- Plugin lives in `plugins/<your-plugin-name>/` as its own Cargo crate
+- Include `README.md` explaining what it detects and why
+- Include unit tests — at minimum, 3 benign inputs and 3 malicious inputs
+- No blocking calls in `evaluate()` — async IO only
+- All dependencies declared in the plugin's own `Cargo.toml`
+- Plugins using ML models: follow the [ML model requirements](#contributing-ml-models-or-scoring-changes) above
 
 ### Good Plugin Ideas
 
-- IP reputation lookup (offline, using MaxMind GeoLite2 or similar FOSS DB)
-- Prompt injection pattern detection (regex + NLP hybrid)
+- IP reputation lookup (offline, MaxMind GeoLite2 FOSS DB)
+- Prompt injection pattern detection (regex + semantic hybrid)
 - Time-of-day anomaly detection
-- Cross-session correlation (same attacker, different IDs)
+- Cross-session correlation (same attacker across different session IDs)
+- Language consistency check (mid-session language shifts typical of automated probing)
 
 ---
 
 ## Documentation Contributions
 
-Documentation lives in `docs/` (MkDocs source) and inline in code (docstrings).
+Documentation lives in `docs/` (MkDocs) and inline in source.
 
 ### What Counts as Documentation
 
-- `docs/` — user-facing guides, architecture explanations, deployment recipes
+- `docs/` — user guides, architecture deep dives, deployment recipes
 - `CONTRIBUTING.md` — this file
-- Docstrings on all public functions in `engine/app/`
-- Inline comments explaining *why*, not *what* (the code shows what)
+- Rust doc comments (`///`) on all public items in `engine/src/`
+- Go doc comments on all exported symbols in `gateway/`
+- Protobuf field comments in `proto/vyse.proto`
+- Inline comments explaining *why*, not *what*
 - `CHANGELOG.md` — updated with every PR
 
 ### Documentation PRs
 
-Pure documentation PRs (no code changes) are fast-tracked for review. They do not require the full test suite to pass, only the `docs/` build check:
+Pure documentation PRs are fast-tracked. Only the docs build check is required:
 
 ```bash
 cd docs && mkdocs build --strict
 ```
 
-Spell-checking is enforced by CI using `cspell`. If you use a domain-specific term that triggers a false positive, add it to `docs/.cspell.json`.
+Spell-checking is enforced by CI via `cspell`. Domain-specific false positives can be added to `docs/.cspell.json`.
 
 ### Changelog Format
 
@@ -540,16 +742,22 @@ Vyse follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- E-Score entropy signal as third scoring dimension (#42)
+- A-Score anomaly detection via IsolationForest over session feature vectors (#42)
+
+### Changed
+- Engine migrated from Python/FastAPI to Rust/Axum — p99 latency reduced to 10–25ms (#55)
+- Internal gateway↔engine communication now uses gRPC instead of REST (#55)
+- Session state moved from SQLite to Redis for sub-millisecond hot-path lookups (#60)
 
 ### Fixed
-- Rekor submission timeout now retries with exponential backoff (#89)
+- Redis WATCH/MULTI/EXEC prevents race condition on concurrent session writes (#77)
 
 ### Security
-- Admin endpoints now require JWT; previously unauthenticated (#101)
+- Gateway requires X-Vyse-Key on all inference endpoints (#95)
 
 ### Breaking Changes
-- `POST /api/chat` now requires `X-Vyse-Key` header (#95)
+- Session header renamed from X-User-ID to X-Vyse-Session (#95)
+- Engine configuration moved from .env to config.toml (#102)
 ```
 
 ---
@@ -559,21 +767,28 @@ Vyse follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 | Label | Meaning |
 |---|---|
 | `bug` | Something is broken |
-| `good first issue` | Self-contained, no security-critical paths, clear scope |
+| `good first issue` | Self-contained, no critical paths, 1–2 hour scope |
 | `help wanted` | Maintainers want community input |
-| `scoring` | Relates to V/D/E/A score or tier logic |
-| `defence` | Relates to perturbation pipeline |
-| `rekor` | Relates to transparency log / audit trail |
-| `gateway` | Gateway / auth / rate-limiting |
+| `scoring` | V/D/E/A score or tier logic |
+| `defence` | Perturbation pipeline |
+| `rekor` | Transparency log / audit trail |
+| `gateway` | Go gateway — auth, rate-limiting, routing |
+| `engine` | Rust engine internals |
+| `redis` | Session state, velocity counters, hot-path ops |
+| `postgres` | Persistent storage, migrations, analytics queries |
+| `grpc` | gRPC service definitions or generated stubs |
+| `proto` | Protobuf definition changes |
+| `ml-inference` | ONNX/candle model loading, inference latency |
 | `dashboard` | React dashboard |
 | `plugin` | Plugin system |
-| `rfc` | Request for comments — design discussion before implementation |
+| `rfc` | Request for comments — design discussion before code |
 | `security` | Security issue — maintainer-only until patched |
 | `test-coverage` | Missing or insufficient tests |
 | `docs` | Documentation improvement |
-| `breaking` | Introduces a breaking API or config change |
+| `breaking` | Introduces a breaking API, config, or proto change |
 | `needs-repro` | Bug report needs a reproduction case |
-| `wontfix` | Out of scope or intentionally not changed |
+| `performance` | Latency, throughput, or memory regression |
+| `wontfix` | Out of scope or intentionally unchanged |
 
 ---
 
@@ -581,20 +796,17 @@ Vyse follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Maintainers aim for:
 
-| PR Type | First response | Merge target |
+| PR Type | First Response | Merge Target |
 |---|---|---|
 | Documentation only | 2 business days | 3 business days |
 | Bug fix (non-critical path) | 3 business days | 1 week |
 | Bug fix (critical path) | 1 business day | 3 business days |
+| Proto / gRPC change | 2 business days | 1 week (requires coordinated engine + gateway review) |
 | New feature | 5 business days | 2 weeks |
-| Scoring / model change | 1 week | After RFC discussion |
+| Scoring / model change | 1 week | After RFC discussion closes |
 | Security fix | 24 hours | ASAP |
 
-These are targets, not guarantees. If your PR has not received a response past the SLA, comment on it or tag a maintainer. We want to keep the review queue clear.
-
-If no one has reviewed your PR within the SLA:
-- Post a comment on the PR
-- Tag `@vyse-security/maintainers`
+These are targets, not guarantees. If your PR has not received a response past the SLA, comment on it and tag `@vyse-security/maintainers`.
 
 ---
 
@@ -602,27 +814,25 @@ If no one has reviewed your PR within the SLA:
 
 ### License
 
-Vyse is licensed under the **GNU GENERAL PUBLIC LICENSE**. By contributing, you agree that your contributions will be licensed under the same terms.
-
-All plugin contributions must also be MIT, Apache-2, or GNU GENERAL PUBLIC LICENSE licensed.
+Vyse is licensed under the **MIT License**. By contributing, you agree that your contributions will be licensed under the same terms. All plugin contributions must also be MIT, Apache-2, or BSD licensed.
 
 ### Developer Certificate of Origin (DCO)
 
-All commits must be signed off, certifying that you wrote the code and have the right to contribute it under the MIT license.
+All commits must be signed off, certifying you wrote the code and have the right to contribute it under the MIT license.
 
 ```bash
 git commit --signoff -m "feat(scoring): add E-Score signal"
-# or shorthand:
+# shorthand:
 git commit -s -m "feat(scoring): add E-Score signal"
 ```
 
-This adds `Signed-off-by: Your Name <your@email.com>` to the commit. The DCO check is enforced by CI — unsigned commits will block the PR.
+This appends `Signed-off-by: Your Name <your@email.com>`. The DCO check is enforced in CI — unsigned commits block the PR.
 
 Full DCO text: [developercertificate.org](https://developercertificate.org/)
 
 ### No CLA Required
 
-Vyse does not require a Contributor License Agreement. The DCO sign-off is sufficient. We believe CLAs create unnecessary friction for open-source contributors.
+Vyse does not require a Contributor License Agreement. The DCO sign-off is sufficient. CLAs create unnecessary friction for open-source contributors.
 
 ---
 

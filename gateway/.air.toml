@@ -1,0 +1,44 @@
+# .air.toml — hot reload configuration for github.com/air-verse/air
+# Install: go install github.com/air-verse/air@latest
+# Run:     air   (in the gateway/ directory)
+
+root = "."
+tmp_dir = ".air_tmp"
+
+[build]
+  # Command to run before building (tidy, vet).
+  pre_cmd = ["go vet ./..."]
+
+  # Full build command. Mirrors the Makefile build target.
+  cmd = "go build -o .air_tmp/vyse-gateway ./cmd/vyse-gateway"
+
+  # Binary to run after a successful build.
+  bin = ".air_tmp/vyse-gateway"
+
+  # Arguments passed to the binary.
+  args_bin = ["--config", "config.toml"]
+
+  # Files/directories that trigger a rebuild when changed.
+  include_ext = ["go", "toml"]
+  exclude_dir  = ["bin", ".air_tmp", "vendor", "internal/grpc/stub"]
+  exclude_file = []
+
+  # Kill the running binary and rebuild on change.
+  kill_delay = "200ms"
+
+  # Send SIGTERM (graceful shutdown) instead of SIGKILL so the server
+  # can finish in-flight requests before restarting.
+  send_interrupt = true
+  interrupt_delay = "1s"
+
+[log]
+  time = false   # air's own log timestamps (redundant with structured logs)
+
+[color]
+  main    = "magenta"
+  watcher = "cyan"
+  build   = "yellow"
+  runner  = "green"
+
+[misc]
+  clean_on_exit = true

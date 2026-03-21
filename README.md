@@ -27,11 +27,11 @@
 
 Vyse is a stateful security middleware layer that sits between any HTTP client and any ML model API. It intercepts every inference request, maintains a behavioural profile across the session, and detects adversarial patterns that only appear over time.
 
-Most ML API defences are stateless — they inspect one request in isolation. An attacker who spreads their queries across time, varies their phrasing slightly, and keeps their request rate low will pass through every stateless check undetected.
+Most ML API defences are stateless   they inspect one request in isolation. An attacker who spreads their queries across time, varies their phrasing slightly, and keeps their request rate low will pass through every stateless check undetected.
 
 Vyse asks a different question: **what has this session been doing?**
 
-By tracking velocity, semantic divergence, prompt entropy, and statistical anomaly across requests, Vyse detects extraction attacks, gradient probing, and systematic boundary mapping that would be invisible to per-request inspection. When a session is flagged, Vyse injects adaptive noise into responses — making the attacker's collected data mathematically useless — while legitimate users see no change whatsoever.
+By tracking velocity, semantic divergence, prompt entropy, and statistical anomaly across requests, Vyse detects extraction attacks, gradient probing, and systematic boundary mapping that would be invisible to per-request inspection. When a session is flagged, Vyse injects adaptive noise into responses   making the attacker's collected data mathematically useless   while legitimate users see no change whatsoever.
 
 No model retraining. No modification to your existing API. No proprietary cloud dependencies.
 
@@ -53,8 +53,8 @@ Vyse sees this:
   t=0    "What is 2+2?"          → D-Score: 0.00  Tier 1
   t=30s  "What is 2+3?"          → D-Score: 0.94  V-Score rising
   t=60s  "What is 2+4?"          → D-Score: 0.96  E-Score: 0.87
-  t=90s  "What is 2+5?"          → Hybrid: 0.81   → Tier 2 — noise injected
-  t=10m  continued pattern       → Hybrid: 0.93   → Tier 3 — Rekor audit
+  t=90s  "What is 2+5?"          → Hybrid: 0.81   → Tier 2   noise injected
+  t=10m  continued pattern       → Hybrid: 0.93   → Tier 3   Rekor audit
 ```
 
 The semantic similarity between consecutive prompts, the low bigram entropy of the session history, and the velocity pattern together produce a hybrid score that no individual request would trigger.
@@ -102,7 +102,7 @@ The semantic similarity between consecutive prompts, the low bigram entropy of t
                                            └─────────────────────┘
 ```
 
-**Latency overhead: 10–25 ms** — negligible against any LLM inference workload.
+**Latency overhead: 10–25 ms**   negligible against any LLM inference workload.
 
 ---
 
@@ -133,14 +133,14 @@ Detects: automated scrapers, high-frequency probing bots.
 
 ### ─── D-Score · Divergence · weight 0.35
 
-Cosine similarity between the current prompt's embedding and the previous prompt's embedding in the same session. High similarity means the attacker is varying inputs minimally — the defining fingerprint of model extraction.
+Cosine similarity between the current prompt's embedding and the previous prompt's embedding in the same session. High similarity means the attacker is varying inputs minimally   the defining fingerprint of model extraction.
 
 ```
 D = cosine_similarity( embed(prompt_t),  embed(prompt_{t-1}) )
 ```
 
 Model: **`all-MiniLM-L6-v2`** (22 MB, Apache-2, CPU-only, ONNX).
-Embeddings are cached per session — only the new prompt is re-inferred each request.
+Embeddings are cached per session   only the new prompt is re-inferred each request.
 
 "Show me model weights" and "display model parameters" differ in every word but score D ≈ 0.91. A hash-based approach would score these as unrelated.
 
@@ -150,13 +150,13 @@ Detects: gradient-based boundary probing, systematic enumeration.
 
 ### ─── E-Score · Entropy · weight 0.15
 
-Inverse Shannon bigram entropy across the last 20 prompts in the session. Low entropy means the session's vocabulary is repetitive — characteristic of template-based extraction scripts.
+Inverse Shannon bigram entropy across the last 20 prompts in the session. Low entropy means the session's vocabulary is repetitive   characteristic of template-based extraction scripts.
 
 ```
 E = 1  −  normalise( H( bigram_freq(last 20 prompts) ) )
 ```
 
-An attacker cycling through "extract X weights", "reveal X parameters", "show X coefficients" has high unigram diversity but low bigram diversity — `X weights`, `X parameters`, `X coefficients` share a common bigram template. E-Score catches what unigrams miss.
+An attacker cycling through "extract X weights", "reveal X parameters", "show X coefficients" has high unigram diversity but low bigram diversity   `X weights`, `X parameters`, `X coefficients` share a common bigram template. E-Score catches what unigrams miss.
 
 Detects: template-based extraction scripts, systematic vocabulary enumeration.
 
@@ -171,7 +171,7 @@ feature_vec = [V_raw, D, E, len(prompt), duration_mins]
 A           = sigmoid( z_score_75th_percentile(feature_vec) )
 ```
 
-The 75th-percentile Z-score (not the maximum) is used to avoid false positives from single-dimension outliers — a very long but otherwise normal prompt does not trigger the score alone.
+The 75th-percentile Z-score (not the maximum) is used to avoid false positives from single-dimension outliers   a very long but otherwise normal prompt does not trigger the score alone.
 
 Detects: sessions that are statistically abnormal even when no individual threshold is crossed.
 
@@ -205,17 +205,17 @@ The session is **immediately escalated to Tier 3** regardless of its numerical h
 ## Tier Classification
 
 ```
-Tier 1 — Clean
+Tier 1   Clean
   Condition : H < 0.55  AND  duration < 2 min
   Response  : Clean LLM output served as-is
 
-Tier 2 — Suspicious
+Tier 2   Suspicious
   Condition : H ≥ 0.55  OR  duration ∈ [2, 10) min
   Response  : Synonym substitution (45% of content words)
               + numeric perturbation (±5%)
               All noise is seed-locked to the session.
 
-Tier 3 — Malicious
+Tier 3   Malicious
   Condition : H ≥ 0.90  AND  duration > 10 min
          OR : intent classifier fires
   Response  : Maximum perturbation (70% substitution + sentence reorder)
@@ -226,7 +226,7 @@ All thresholds are configurable in `engine/config.toml`.
 
 ---
 
-## Sticky Noise — Why It Works
+## Sticky Noise   Why It Works
 
 When a session reaches Tier 2 or 3, Vyse applies perturbation to every response. The noise is **deterministic and session-scoped**:
 
@@ -234,9 +234,9 @@ When a session reaches Tier 2 or 3, Vyse applies perturbation to every response.
 noise_seed = SHA-256( session_id_hash ‖ tracking_started_at )
 ```
 
-The same seed is used for every perturbed response in the session. This is the critical design choice: an attacker who collects 500 perturbed responses and tries to average them to cancel out the noise **cannot** — because the noise is not random, it is consistent. Every response shifts in the same direction by the same amounts. The average of 500 consistently-shifted responses is still shifted.
+The same seed is used for every perturbed response in the session. This is the critical design choice: an attacker who collects 500 perturbed responses and tries to average them to cancel out the noise **cannot**   because the noise is not random, it is consistent. Every response shifts in the same direction by the same amounts. The average of 500 consistently-shifted responses is still shifted.
 
-Legitimate users see no noise. Tier classification is session-scoped, not request-scoped — a legitimate user is never bumped to Tier 2 by accident.
+Legitimate users see no noise. Tier classification is session-scoped, not request-scoped   a legitimate user is never bumped to Tier 2 by accident.
 
 ---
 
@@ -247,7 +247,7 @@ Every Tier 3 event is submitted to a **Rekor transparency log** (Sigstore), eith
 Rekor uses a Merkle tree: each entry is linked to the previous one via `SHA-256(prev_hash ‖ entry_data)`. Modifying any past entry breaks the chain and is immediately detectable. An auditor can verify any event without trusting the Vyse operator.
 
 Each audit entry contains:
-- `SHA-256(session_id)` — privacy-preserving identity
+- `SHA-256(session_id)`   privacy-preserving identity
 - hybrid score and all four signal scores
 - session duration
 - noise seed (for forensic replay)
@@ -312,8 +312,8 @@ go run ./attack-simulator --user attacker-001 --duration 15 --rps 2
 
 All values live in two files. Environment variables override config files.
 
-**`gateway/config.toml`** — HTTP ports, auth, rate limits, engine address.
-**`engine/config.toml`** — scoring weights, tier thresholds, ML model paths, LLM provider, Rekor URL.
+**`gateway/config.toml`**   HTTP ports, auth, rate limits, engine address.
+**`engine/config.toml`**   scoring weights, tier thresholds, ML model paths, LLM provider, Rekor URL.
 
 Key scoring configuration:
 
@@ -382,7 +382,7 @@ GET    /health                  Liveness + engine status
 vyse/
 ├─ proto/                  gRPC service contract (source of truth)
 │  └─ vyse.proto
-├─ gateway/                Go — HTTP ingestion, auth, rate limiting
+├─ gateway/                Go   HTTP ingestion, auth, rate limiting
 │  ├─ cmd/vyse-gateway/
 │  ├─ internal/config/
 │  ├─ internal/middleware/  auth · ratelimit · session
@@ -390,7 +390,7 @@ vyse/
 │  ├─ internal/grpc/       engine client
 │  ├─ internal/proto/      generated Go stubs
 │  └─ internal/server/     dual-port HTTP + WebSocket
-├─ engine/                 Rust — scoring, ML, defence, audit
+├─ engine/                 Rust   scoring, ML, defence, audit
 │  └─ src/
 │     ├─ scoring/          v_score · d_score · e_score · a_score
 │     ├─ defence/          synonym · numeric · mod (pipeline)
@@ -399,7 +399,7 @@ vyse/
 │     ├─ audit/            Rekor client · entry · queue
 │     ├─ grpc/             tonic service implementation
 │     └─ plugin/           threat detector plugin trait
-├─ dashboard/              React — admin UI, live WebSocket feed
+├─ dashboard/              React   admin UI, live WebSocket feed
 ├─ infra/                  Rekor + Trillian config, migrations
 ├─ tools/                  attack-simulator · model downloader
 └─ docker-compose.yml
@@ -442,13 +442,13 @@ Security vulnerabilities and bypass techniques: **Security → Report a Vulnerab
 
 Vyse's design is informed by the following body of work on ML model attacks and defences.
 
-Tramèr et al., **Stealing Machine Learning Models via Prediction APIs**, USENIX Security 2016 — the original formalisation of model extraction as an attack class.
+Tramèr et al., **Stealing Machine Learning Models via Prediction APIs**, USENIX Security 2016   the original formalisation of model extraction as an attack class.
 
-Fredrikson et al., **Model Inversion Attacks that Exploit Confidence Information**, ACM CCS 2015 — how confidence scores enable systematic inference about training data.
+Fredrikson et al., **Model Inversion Attacks that Exploit Confidence Information**, ACM CCS 2015   how confidence scores enable systematic inference about training data.
 
-Shokri et al., **Membership Inference Attacks Against Machine Learning Models**, IEEE S&P 2017 — statistical distinguishability of members vs non-members from prediction behaviour.
+Shokri et al., **Membership Inference Attacks Against Machine Learning Models**, IEEE S&P 2017   statistical distinguishability of members vs non-members from prediction behaviour.
 
-Dwork et al., **The Algorithmic Foundations of Differential Privacy** — the theoretical basis for calibrated noise injection as a formal privacy mechanism.
+Dwork et al., **The Algorithmic Foundations of Differential Privacy**   the theoretical basis for calibrated noise injection as a formal privacy mechanism.
 
 ---
 
@@ -456,4 +456,4 @@ Dwork et al., **The Algorithmic Foundations of Differential Privacy** — the th
 
 GNU General Public License v3.0 (GPL-3.0). See [LICENSE.md](LICENSE.md).
 
-Vyse complements existing controls — WAFs, API gateways, rate limiters. It is not a replacement for them.
+Vyse complements existing controls   WAFs, API gateways, rate limiters. It is not a replacement for them.

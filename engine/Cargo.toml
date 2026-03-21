@@ -1,0 +1,84 @@
+[package]
+name        = "vyse-engine"
+version     = "0.1.0"
+edition     = "2021"
+description = "Vyse defence engine — behavioral scoring, ML inference, perturbation pipeline"
+license     = "MIT"
+
+[[bin]]
+name = "vyse-engine"
+path = "src/main.rs"
+
+[lib]
+name = "vyse_engine"
+path = "src/lib.rs"
+
+# ── Async runtime ──────────────────────────────────────────────────────────────
+[dependencies]
+tokio        = { version = "1.37", features = ["full"] }
+tokio-stream = { version = "0.1" }
+
+# ── gRPC ──────────────────────────────────────────────────────────────────────
+tonic        = { version = "0.11" }
+prost        = "0.12"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+config       = { version = "0.14", features = ["toml"] }
+serde        = { version = "1",    features = ["derive"] }
+serde_json   = "1"
+
+# ── ML inference — ONNX Runtime ───────────────────────────────────────────────
+# Runs all-MiniLM-L6-v2 (D-Score) and nli-MiniLM2-L6-H768 (intent) as ONNX.
+# load-dynamic links the ONNX Runtime shared library at runtime, avoiding
+# a static C++ dependency and keeping compile times fast.
+ort          = { version = "2.0.0-rc.4", features = ["load-dynamic"] }
+ndarray      = "0.15"
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+redis        = { version = "0.25", features = ["tokio-comp", "connection-manager", "json"] }
+
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+sqlx         = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "json"] }
+
+# ── HTTP client (Rekor submissions) ───────────────────────────────────────────
+reqwest      = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# ── Cryptography ──────────────────────────────────────────────────────────────
+sha2         = "0.10"
+hmac         = "0.12"
+hex          = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand         = "0.8"
+
+# ── NLP utilities ─────────────────────────────────────────────────────────────
+unicode-segmentation = "1"
+
+# ── Observability ─────────────────────────────────────────────────────────────
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# ── Error handling ────────────────────────────────────────────────────────────
+thiserror  = "1"
+anyhow     = "1"
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+uuid       = { version = "1", features = ["v4"] }
+chrono     = { version = "0.4", features = ["serde"] }
+once_cell  = "1"
+async-trait = "0.1"
+bytes      = "1"
+
+[build-dependencies]
+# Compiles proto/vyse.proto → Rust types at build time.
+tonic-build = "0.11"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall    = "0.12"
+tempfile   = "3"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"

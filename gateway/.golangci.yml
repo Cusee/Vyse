@@ -1,0 +1,66 @@
+# .golangci.yml — golangci-lint configuration for vyse-gateway
+# Docs: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  # Exclude auto-generated proto stubs from linting.
+  exclude-dirs:
+    - internal/proto
+    - internal/grpc/stub
+
+linters:
+  enable:
+    - errcheck        # check for unchecked errors
+    - gosimple        # simplifications
+    - govet           # go vet findings
+    - ineffassign     # detect ineffectual assignments
+    - staticcheck     # static analysis
+    - unused          # detect unused code
+    - gofmt           # formatting
+    - goimports       # import ordering
+    - misspell        # spelling in comments
+    - godot           # ensure comments end with a period
+    - noctx           # detect HTTP requests without context
+    - bodyclose       # ensure HTTP response bodies are closed
+    - contextcheck    # ensure functions use context correctly
+    - exhaustive      # exhaustive enum switches
+    - gocritic        # misc good practices
+    - revive          # fast, configurable linter
+
+linters-settings:
+  govet:
+    enable-all: true
+
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - "checkPrivateReceivers"
+          - "sayRepetitiveInsteadOfStutters"
+
+  godot:
+    scope: declarations   # only top-level declarations, not inline comments
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+    disabled-checks:
+      - commentedOutCode   # we use TODO comments which gocritic flags
+
+issues:
+  exclude-rules:
+    # Test files can use fmt.Println for debugging output.
+    - path: "_test.go"
+      linters:
+        - forbidigo
+
+    # main.go can call os.Exit.
+    - path: "cmd/"
+      linters:
+        - forbidigo
+
+  # Maximum number of issues per linter.
+  max-issues-per-linter: 50
+  max-same-issues: 5

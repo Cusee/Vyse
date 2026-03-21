@@ -1,0 +1,109 @@
+# vyse-gateway configuration file
+# ─────────────────────────────────────────────────────────────────────────────
+# All values here are defaults and examples.
+# Environment variables with the VYSE_ prefix override any value in this file.
+# Example: VYSE_SERVER_PUBLIC_PORT=9090 overrides server.public_port below.
+#
+# SECRETS (jwt_secret, admin_password, api_key) must NEVER be put in this file.
+# Provide them via environment variables only:
+#   VYSE_AUTH_JWT_SECRET=<min 32 chars>
+#   VYSE_AUTH_ADMIN_PASSWORD=<bcrypt hash or raw password>
+#   VYSE_AUTH_API_KEY=<min 32 chars>
+# ─────────────────────────────────────────────────────────────────────────────
+
+[server]
+# Port for client inference requests (POST /api/infer).
+public_port = 8080
+
+# Port for JWT-protected admin requests (/admin/*).
+# Bind this to a private network interface in production.
+admin_port = 8081
+
+# Maximum duration for reading a full client request.
+read_timeout = "10s"
+
+# Maximum duration for writing the full response (includes engine round-trip).
+# Set this higher than the engine's request_timeout.
+write_timeout = "30s"
+
+# Maximum duration for graceful shutdown when a stop signal is received.
+# In-flight requests are allowed to complete within this window.
+shutdown_timeout = "15s"
+
+# List of trusted upstream proxy IPs (e.g. load balancer, nginx).
+# The gateway uses these to correctly resolve the real client IP from
+# X-Forwarded-For. Set to [] to trust no proxies (direct connections only).
+trusted_proxies = []
+
+
+[auth]
+# jwt_secret — SET VIA VYSE_AUTH_JWT_SECRET (min 32 chars). Never put here.
+# jwt_secret = ""
+
+# Duration in minutes before an issued admin JWT expires.
+jwt_expiry_minutes = 480   # 8 hours
+
+# Username accepted at POST /admin/auth/token.
+admin_username = "admin"
+
+# admin_password — SET VIA VYSE_AUTH_ADMIN_PASSWORD. Never put here.
+# admin_password = ""
+
+# The HTTP header name clients must use to send the inference API key.
+api_key_header = "X-Vyse-Key"
+
+# api_key — SET VIA VYSE_AUTH_API_KEY (min 32 chars). Never put here.
+# api_key = ""
+
+
+[engine]
+# gRPC address of the Rust defence engine.
+# Format: host:port
+address = "localhost:50051"
+
+# Maximum time to wait when establishing the gRPC connection at startup.
+dial_timeout = "5s"
+
+# Per-request deadline sent to the engine.
+# Requests that take longer than this are cancelled and return HTTP 503.
+request_timeout = "25s"
+
+# Number of times to retry a failed gRPC call before returning an error.
+# Uses exponential backoff between retries.
+max_retries = 3
+
+# Enable mTLS for the gRPC connection to the engine.
+# Acceptable without TLS for local development or same-pod deployments.
+# Always enable for internet-facing or cross-machine deployments.
+use_tls = false
+
+# Paths to client TLS certificate and key (required when use_tls = true).
+# tls_cert_file = "/etc/vyse/certs/gateway.crt"
+# tls_key_file  = "/etc/vyse/certs/gateway.key"
+
+
+[limits]
+# Sustained inference requests per second allowed per unique client IP.
+# Clients that exceed this receive HTTP 429 with a Retry-After header.
+requests_per_second = 10.0
+
+# Maximum burst size — how many requests can be made in an instant.
+# Set burst > requests_per_second to allow short legitimate bursts.
+burst = 20
+
+# Maximum size of the prompt field in bytes.
+# Requests with a larger prompt are rejected with HTTP 413 before
+# reaching the engine, saving inference compute.
+max_prompt_bytes = 16384  # 16 KB
+
+# The HTTP header name clients use to identify their session.
+# The value of this header is hashed before being forwarded to the engine.
+session_header_name = "X-Vyse-Session"
+
+
+[logging]
+# Minimum log level: "debug" | "info" | "warn" | "error"
+level = "info"
+
+# Log format: "json" for production (structured), "text" for development.
+format = "json"
